@@ -120,6 +120,54 @@ df["SP_alpha"] = (df["SP"] - df["SP_min"]) / (df["SP_max"] - df["SP_min"] + 1e-6
 def create_windows(df, window=7):
     half = window // 2
 
+    base_features = [
+        "GR", "SP", "RES", "NEU",
+        "GR_diff", "RES_diff",
+        "GR_ma", "RES_std",
+        "GR_RES_ratio", "SP_GR",
+        "SP_alpha"
+    ]
+
+    X_list = []
+    y_list = []
+    groups_list = []
+
+    for seg_id, segment in df.groupby("segment_id"):
+        segment = segment.reset_index(drop=True)
+
+        if len(segment) < window:
+            continue
+
+        values = segment[base_features].values.astype(np.float32)
+
+        for i in range(half, len(segment) - half):
+            window_data = values[i-half:i+half+1].reshape(-1)
+
+            X_list.append(window_data)
+            y_list.append(segment.loc[i, "LIT_Facies"])
+            groups_list.append(segment.loc[i, "WELL"])
+
+    X = np.array(X_list, dtype=np.float32)
+    y = np.array(y_list)
+    groups = np.array(groups_list)
+
+    # =========================
+    # СОЗДАЁМ ИМЕНА ФИЧ
+    # =========================
+    feature_names = []
+    for t in range(window):
+        for f in base_features:
+            feature_names.append(f"{f}_t{t}")
+
+    # =========================
+    # ДЕЛАЕМ DataFrame (ВАЖНО!)
+    # =========================
+    X = pd.DataFrame(X, columns=feature_names)
+
+    return X, y, groups
+def create_windows(df, window=7):
+    half = window // 2
+
     feature_cols = [
         "GR", "SP", "RES", "NEU",
         "GR_diff", "RES_diff",
