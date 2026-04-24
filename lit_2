@@ -1,0 +1,228 @@
+# =========================
+# IMPORTS
+# =========================
+import pandas as pd
+import numpy as np
+
+from sklearn.model_selection import GroupKFold
+from sklearn.metrics import accuracy_score
+
+from lightgbm import LGBMClassifier
+import lightgbm as lgb
+
+import matplotlib.pyplot as plt
+
+
+# =========================
+# LOAD DATA
+# =========================
+df = pd.read_csv("your_data.csv")
+
+# REQUIRED:
+# WELL, DEPT, SVGK, SVPZ, SVNK, SVPS, SVDS, LIT_Facies
+
+
+# =========================
+# SORT
+# =========================
+df = df.sort_values(["WELL", "DEPT"]).reset_index(drop=True)
+
+
+# =========================
+# BASIC CLEANING
+# =========================
+log_cols = ["SVGK", "SVPZ", "SVNK", "SVPS", "SVDS"]
+
+# заполнение пропусков по скважине (без lambda)
+for col in log_cols:
+    df[col] = df[col].fillna(df.groupby("WELL")[col].transform("median"))
+
+df = df.dropna(subset=["LIT_Facies"])
+
+
+# =========================
+# CONTINUITY
+# =========================
+df["DEPT_diff"] = df.groupby("WELL")["DEPT"].diff()
+
+MAX_STEP = 0.2
+df["is_continuous"] = df["DEPT_diff"] <= MAX_STEP
+
+df["new_segment"] = (
+    (~df["is_continuous"]) |
+    (df["WELL"] != df["WELL"].shift())
+)
+
+df["segment_id"] = df["new_segment"].cumsum()
+
+
+# =========================
+# OUTLIER CLIP (FAST, без lambda)
+# =========================
+for col in log_cols:
+    q_low = df.groupby("segment_id")[col].transform("quantile", 0.01)
+    q_high = df.groupby("segment_id")[col].transform("quantile", 0.99)
+    df[col] = df[col].clip(q_low, q_high)
+
+
+# =========================
+# NORMALIZATION (FAST)
+# =========================
+for col in log_cols:
+    mean = df.groupby("segment_id")[col].transform("mean")
+    std = df.groupby("segment_id")[col].transform("std")
+    df[col] = (df[col] - mean) / (std + 1e-6)
+
+
+# =========================
+# BASE FEATURES
+# =========================
+df["GR"] = df["SVGK"]
+df["SP"] = df["SVPS"]
+df["RES"] = df["SVPZ"]
+df["NEU"] = df["SVNK"]
+df["CALI"] = df["SVDS"]
+
+
+# =========================
+# DERIVATIVES (NO NaN)
+# =========================
+df["GR_diff"] = df.groupby("segment_id")["GR"].diff().fillna(0)
+df["RES_diff"] = df.groupby("segment_id")["RES"].diff().fillna(0)
+
+
+# =========================
+# ROLLING (NO NaN, FAST)
+# =========================
+df["GR_ma"] = df.groupby("segment_id")["GR"].rolling(5, min_periods=1).mean().reset_index(level=0, drop=True)
+df["RES_std"] = df.groupby("segment_id")["RES"].rolling(5, min_periods=1).std().reset_index(level=0, drop=True).fillna(0)
+
+
+# =========================
+# CROSS FEATURES
+# =========================
+df["GR_RES_ratio"] = df["GR"] / (df["RES"] + 1e-6)
+df["SP_GR"] = df["SP"] - df["GR"]
+
+
+# =========================
+# ALPHA SP
+# =========================
+df["SP_min"] = df.groupby("segment_id")["SP"].rolling(20, min_periods=1).min().reset_index(level=0, drop=True)
+df["SP_max"] = df.groupby("segment_id")["SP"].rolling(20, min_periods=1).max().reset_index(level=0, drop=True)
+
+df["SP_alpha"] = (df["SP"] - df["SP_min"]) / (df["SP_max"] - df["SP_min"] + 1e-6)
+
+
+# =========================
+# SLIDING WINDOW DATASET
+# =========================
+def create_windows(df, window=7):
+    half = window // 2
+
+    feature_cols = [
+        "GR", "SP", "RES", "NEU",
+        "GR_diff", "RES_diff",
+        "GR_ma", "RES_std",
+        "GR_RES_ratio", "SP_GR",
+        "SP_alpha"
+    ]
+
+    X = []
+    y = []
+    groups = []
+
+    for seg_id, segment in df.groupby("segment_id"):
+        segment = segment.reset_index(drop=True)
+
+        if len(segment) < window:
+            continue
+
+        values = segment[feature_cols].values
+
+        for i in range(half, len(segment) - half):
+            window_data = values[i-half:i+half+1].flatten()
+
+            X.append(window_data)
+            y.append(segment.loc[i, "LIT_Facies"])
+            groups.append(segment.loc[i, "WELL"])
+
+    return np.array(X), np.array(y), np.array(groups)
+
+
+X, y, groups = create_windows(df, window=7)
+
+
+# =========================
+# ENCODE TARGET
+# =========================
+from sklearn.preprocessing import LabelEncoder
+
+le = LabelEncoder()
+y = le.fit_transform(y)
+
+
+# =========================
+# MODEL + CV
+# =========================
+gkf = GroupKFold(n_splits=5)
+
+scores = []
+train_losses = []
+val_losses = []
+
+for fold, (train_idx, val_idx) in enumerate(gkf.split(X, y, groups)):
+    print(f"\nFOLD {fold+1}")
+
+    X_train, X_val = X[train_idx], X[val_idx]
+    y_train, y_val = y[train_idx], y[val_idx]
+
+    model = LGBMClassifier(
+        objective="multiclass",
+        num_class=len(np.unique(y)),
+        n_estimators=300,
+        learning_rate=0.05,
+        class_weight="balanced",
+        num_leaves=31,
+        random_state=42
+    )
+
+    evals_result = {}
+
+    model.fit(
+        X_train,
+        y_train,
+        eval_set=[(X_train, y_train), (X_val, y_val)],
+        eval_metric="multi_logloss",
+        callbacks=[
+            lgb.record_evaluation(evals_result)
+        ]
+    )
+
+    y_pred = model.predict(X_val)
+    acc = accuracy_score(y_val, y_pred)
+
+    print("Accuracy:", acc)
+    scores.append(acc)
+
+    train_losses.append(evals_result["training"]["multi_logloss"])
+    val_losses.append(evals_result["valid_1"]["multi_logloss"])
+
+
+print("\nMean accuracy:", np.mean(scores))
+
+
+# =========================
+# PLOTS
+# =========================
+plt.figure()
+
+for i in range(len(train_losses)):
+    plt.plot(train_losses[i], linestyle="--")
+    plt.plot(val_losses[i])
+
+plt.title("Training / Validation Loss")
+plt.xlabel("Iterations")
+plt.ylabel("Logloss")
+
+plt.show()
