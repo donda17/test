@@ -1,0 +1,12 @@
+df["THICK"] = df["BASE"] - df["TOP"]
+df["MID_DEPTH"] = (df["TOP"] + df["BASE"]) / 2
+
+df = df.sort_values(["WELL", "TOP"])
+
+for col in ["GR", "RHOB", "NPHI"]:
+    df[f"{col}_prev"] = df.groupby("WELL")[col].shift(1)
+    df[f"{col}_next"] = df.groupby("WELL")[col].shift(-1)
+
+df["GR_diff"] = df["GR"] - df["GR_prev"]
+
+df["DEPTH_NORM"] = df["MID_DEPTH"] / df.groupby("WELL")["MID_DEPTH"].transform("max")
