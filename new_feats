@@ -10,3 +10,46 @@ for col in ["GR", "RHOB", "NPHI"]:
 df["GR_diff"] = df["GR"] - df["GR_prev"]
 
 df["DEPTH_NORM"] = df["MID_DEPTH"] / df.groupby("WELL")["MID_DEPTH"].transform("max")
+
+
+df = df.sort_values(["WELL", "TOP"])
+
+df["THICK"] = df["BASE"] - df["TOP"]
+
+for col in ["GR", "RHOB", "NPHI"]:
+    df[f"{col}_grad"] = df.groupby("WELL")[col].diff()
+    df[f"{col}_prev"] = df.groupby("WELL")[col].shift(1)
+    df[f"{col}_next"] = df.groupby("WELL")[col].shift(-1)
+
+df["RHOB_NPHI_diff"] = df["RHOB"] - df["NPHI"]
+
+# пропуски
+df = df.fillna(method="ffill").fillna(method="bfill")
+
+
+models = []
+scores = []
+
+for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
+    print(f"Fold {fold}")
+    
+    X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+    y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+    
+    w_train = sample_weights[train_idx]
+    
+    model = GradientBoostingClassifier(
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=3
+    )
+    
+    model.fit(X_train, y_train, sample_weight=w_train)
+    
+    preds = model.predict(X_val)
+    
+    print(classification_report(y_val, preds))
+    
+    models.append(model)
+
+df["pred"] = models[0].predict(X)
