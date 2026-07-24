@@ -1,0 +1,135 @@
+import numpy as np
+import pandas as pd
+
+# сортируем по глубине
+df = df.sort_values("MD").reset_index(drop=True)
+
+logs = [
+    "AV_ASP_TL",
+    "AV_SVGK",
+    "AV_SVNK",
+    "AV_SVDS",
+    "AV_SVPZ"
+]
+
+# =====================================================
+# Толщина пласта
+# =====================================================
+
+df["Thickness"] = df["MD"].diff()
+
+# если первый пласт неизвестен
+df.loc[0, "Thickness"] = df.loc[1, "Thickness"]
+
+# =====================================================
+# Отношения между кривыми
+# =====================================================
+
+eps = 1e-8
+
+df["GK_NK"] = df["AV_SVGK"] / (df["AV_SVNK"] + eps)
+df["GK_DS"] = df["AV_SVGK"] / (df["AV_SVDS"] + eps)
+df["GK_PS"] = df["AV_SVGK"] / (df["AV_ASP_TL"] + eps)
+df["GK_PZ"] = df["AV_SVGK"] / (df["AV_SVPZ"] + eps)
+
+df["DS_NK"] = df["AV_SVDS"] / (df["AV_SVNK"] + eps)
+df["DS_PS"] = df["AV_SVDS"] / (df["AV_ASP_TL"] + eps)
+df["DS_PZ"] = df["AV_SVDS"] / (df["AV_SVPZ"] + eps)
+
+df["NK_PS"] = df["AV_SVNK"] / (df["AV_ASP_TL"] + eps)
+df["NK_PZ"] = df["AV_SVNK"] / (df["AV_SVPZ"] + eps)
+
+df["PS_PZ"] = df["AV_ASP_TL"] / (df["AV_SVPZ"] + eps)
+
+# =====================================================
+# Разности
+# =====================================================
+
+df["GK_minus_NK"] = df["AV_SVGK"] - df["AV_SVNK"]
+df["GK_minus_DS"] = df["AV_SVGK"] - df["AV_SVDS"]
+df["GK_minus_PS"] = df["AV_SVGK"] - df["AV_ASP_TL"]
+df["GK_minus_PZ"] = df["AV_SVGK"] - df["AV_SVPZ"]
+
+df["DS_minus_NK"] = df["AV_SVDS"] - df["AV_SVNK"]
+df["DS_minus_PS"] = df["AV_SVDS"] - df["AV_ASP_TL"]
+df["DS_minus_PZ"] = df["AV_SVDS"] - df["AV_SVPZ"]
+
+df["NK_minus_PS"] = df["AV_SVNK"] - df["AV_ASP_TL"]
+df["NK_minus_PZ"] = df["AV_SVNK"] - df["AV_SVPZ"]
+
+df["PS_minus_PZ"] = df["AV_ASP_TL"] - df["AV_SVPZ"]
+
+# =====================================================
+# Предыдущий пласт
+# =====================================================
+
+for log in logs:
+    df[f"{log}_prev"] = df[log].shift(1)
+
+# =====================================================
+# Следующий пласт
+# =====================================================
+
+for log in logs:
+    df[f"{log}_next"] = df[log].shift(-1)
+
+# =====================================================
+# Разности с предыдущим
+# =====================================================
+
+for log in logs:
+    df[f"{log}_diff_prev"] = df[log] - df[log].shift(1)
+
+# =====================================================
+# Разности со следующим
+# =====================================================
+
+for log in logs:
+    df[f"{log}_diff_next"] = df.shift(-1)[log] - df[log]
+
+# =====================================================
+# Относительное изменение
+# =====================================================
+
+for log in logs:
+    df[f"{log}_pct_prev"] = (
+        df[log] - df[log].shift(1)
+    ) / (df[log].shift(1) + eps)
+
+# =====================================================
+# Скользящее среднее
+# =====================================================
+
+for log in logs:
+    df[f"{log}_roll3"] = df[log].rolling(3, center=True).mean()
+
+# =====================================================
+# Скользящее стандартное отклонение
+# =====================================================
+
+for log in logs:
+    df[f"{log}_roll_std"] = df[log].rolling(3, center=True).std()
+
+# =====================================================
+# Z-нормировка
+# =====================================================
+
+for log in logs:
+    df[f"{log}_z"] = (
+        df[log] - df[log].mean()
+    ) / (df[log].std() + eps)
+
+# =====================================================
+# Ранг внутри скважины
+# =====================================================
+
+for log in logs:
+    df[f"{log}_rank"] = df[log].rank(pct=True)
+
+# =====================================================
+# Удаляем строки с NaN
+# =====================================================
+
+df = df.dropna().reset_index(drop=True)
+
+print(df.shape)
